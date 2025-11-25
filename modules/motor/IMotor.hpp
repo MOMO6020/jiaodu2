@@ -2,7 +2,7 @@
  * @Author       : Notch-FGJ mail.fgj.com@gmail.com
  * @Date         : 2025-06-24 16:47:58
  * @LastEditors  : Notch-FGJ mail.fgj.com@gmail.com
- * @LastEditTime : 2025-11-27 14:00:00
+ * @LastEditTime : 2025-11-27 15:00:00
  * @FilePath     : \gxnu_hushi_ec\modules\motor\IMotor.hpp
  * @Description  : 电机接口类
  */
@@ -59,6 +59,11 @@ public:
     void setCloseLoop(CloseloopType loop) { setting_.close_loop = loop; };  ///< 设置电机闭环类型
     void disable() { enable_ = false; };                                    ///< 禁用电机
     void enable() { enable_ = true; };                                      ///< 启用电机
+
+    // 新增：获取电机使能状态
+    bool isEnabled() const { return enable_; }
+    // 新增：获取电机在线状态
+    bool isOnline() const { return is_online; }
 
     virtual void decode(const uint8_t* buf, const uint8_t len) = 0;  ///< 解码电机反馈数据（基类纯虚函数，子类必须实现）
     virtual void offlineCallback() = 0;  ///< 电机离线回调函数, 当电机离线时调用

@@ -66,7 +66,7 @@ void app_main()
             .external_speed_feedback = FeedbackType::INTERNAL
         },
         MotorPID{
-            .pid_angle_ = PIDController(PIDConfig{8.0f, 0.1f, 0.2f, 500.0f, 5.0f, PIDImprovement::PID_Integral_Limit, 30000.0f}),
+            .pid_angle_ = PIDController(PIDConfig{15.0f, 0.1f, 0.2f, 500.0f, 5.0f, PIDImprovement::PID_Integral_Limit, 30000.0f}),
             .pid_speed_ = PIDController(PIDConfig{5.0f, 0.05f, 0.1f, 16384.0f, 3.0f, PIDImprovement::PID_Integral_Limit, 30000.0f})
         }
     );
@@ -122,6 +122,16 @@ void MotorPositionControlTask(void* arg __attribute__((unused)))
     // 等待电机初始化完成（避免空指针访问）
     vTaskDelay(100 / portTICK_PERIOD_MS);
 
+        // 强制使能并检查状态
+        if (gm6020) {
+            gm6020->enable();
+            // 先格式化字符串到缓冲区
+            char log_buf[128];
+            snprintf(log_buf, sizeof(log_buf), "Enabled: %d, Online: %d", 
+                     gm6020->isEnabled(), gm6020->isOnline());
+            // 再传入LOGINFO
+            LOGINFO("GM6020", log_buf);
+        }
     // 使能电机
     if (gm6020) gm6020->enable();
     if (j4310) j4310->enable();
