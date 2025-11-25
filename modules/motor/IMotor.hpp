@@ -2,7 +2,7 @@
  * @Author       : Notch-FGJ mail.fgj.com@gmail.com
  * @Date         : 2025-06-24 16:47:58
  * @LastEditors  : Notch-FGJ mail.fgj.com@gmail.com
- * @LastEditTime : 2025-06-24 17:27:01
+ * @LastEditTime : 2025-11-27 14:00:00
  * @FilePath     : \gxnu_hushi_ec\modules\motor\IMotor.hpp
  * @Description  : 电机接口类
  */
@@ -10,6 +10,7 @@
 #include "bsp/log/log.hpp"
 #include "modules/daemon/daemon.hpp"
 #include "motor_def.hpp"
+
 class IMotor
 {
 public:
@@ -18,8 +19,11 @@ public:
     {
         daemon_ = registerDaemon(10, 10, std::bind(&IMotor::offlineCallback, this));
     }
+
     void setRef(float ref) { pid_ref_ = ref; };  ///< 设置电机参考值
-    void setFeedback(CloseloopType loop, FeedbackType type, std::shared_ptr<float> feedback_ptr = nullptr)
+
+    // 修复：将 std::shared_ptr<float> 改为 float*，与 motor_def.hpp 中的指针类型一致
+    void setFeedback(CloseloopType loop, FeedbackType type, float* feedback_ptr = nullptr)
     {
         if (loop == CloseloopType::ANGLE_LOOP)
         {
@@ -30,7 +34,7 @@ public:
                     LOGERROR("Motor", "Feedback pointer is null");
                     return;
                 }
-                pidControllers_.pid_angle_feedback_ptr_ = feedback_ptr;
+                pidControllers_.pid_angle_feedback_ptr_ = feedback_ptr;  // 类型匹配：float* = float*
             }
             setting_.external_angle_feedback = type;
         }
@@ -43,19 +47,22 @@ public:
                     LOGERROR("Motor", "Feedback pointer is null");
                     return;
                 }
-                pidControllers_.pid_speed_feedback_ptr_ = feedback_ptr;
+                pidControllers_.pid_speed_feedback_ptr_ = feedback_ptr;  // 类型匹配：float* = float*
             }
             setting_.external_speed_feedback = type;
         }
         else
             LOGERROR("Motor", "Invalid loop type");
     }
+
     void setOuterloop(CloseloopType loop) { setting_.outer_loop = loop; };  ///< 设置电机外环闭环类型
     void setCloseLoop(CloseloopType loop) { setting_.close_loop = loop; };  ///< 设置电机闭环类型
     void disable() { enable_ = false; };                                    ///< 禁用电机
     void enable() { enable_ = true; };                                      ///< 启用电机
 
+    virtual void decode(const uint8_t* buf, const uint8_t len) = 0;  ///< 解码电机反馈数据（基类纯虚函数，子类必须实现）
     virtual void offlineCallback() = 0;  ///< 电机离线回调函数, 当电机离线时调用
+    virtual int16_t calculateOutputCurrent() = 0;  ///< 计算电机输出电流（基类纯虚函数，子类必须实现）
 
 protected:
     MotorType       motor_type_;      ///< 电机类型

@@ -2,13 +2,14 @@
  * @Author       : Notch-FGJ mail.fgj.com@gmail.com
  * @Date         : 2025-04-07 10:59:49
  * @LastEditors  : Notch-FGJ mail.fgj.com@gmail.com
- * @LastEditTime : 2025-06-24 17:21:03
+ * @LastEditTime : 2025-11-27 10:00:00
  * @FilePath     : \gxnu_hushi_ec\modules\motor\DJIMotor\DJIMotor.hpp
  * @Description  : 大疆电机驱动
  */
 #pragma once
 #include "../motor_def.hpp"
 #include <array>
+#include <unordered_map>
 
 #include "bsp/can/stm32_can.hpp"
 #include "modules/daemon/daemon.hpp"
@@ -22,6 +23,14 @@
 class DJIMotor : public IMotor
 {
 public:
+    // 电机参数结构体（对应不同电机型号的固定参数）
+    struct MotorParams {
+        float reduction_ratio;  // 减速比
+        float max_angle;        // 最大角度限制(度)
+        float min_angle;        // 最小角度限制(度)
+        float encoder_res;      // 编码器分辨率（线数）
+    };
+
     struct Measure
     {
         uint16_t last_encoder   = 0;  ///< 上次编码器值(0-8191)
@@ -48,6 +57,12 @@ public:
 
     static void DJIMotorControl();
 
+    // 设置目标角度接口（应用层调用）
+    void setTargetAngle(float target_angle);
+
+    // 获取当前总角度（供应用层打印调试）
+    float getCurrentAngle() const { return measure_.total_angle; }
+
     Measure measure_;  ///< 电机测量数据
 
 private:
@@ -55,6 +70,25 @@ private:
     uint8_t                                                 motor_tx_group_ = 0;          ///< 电机发送组ID
     inline static std::array<DJIMotor*, MAX_DJIMOTOR_COUNT> registered_motors_{nullptr};  ///< 电机数组
     inline static uint8_t                                   motor_count_ = 0;             ///< 电机数量
+
+    MotorType motor_type_;          ///< 当前电机型号
+    MotorPIDSetting setting_;       ///< 电机控制设置（从构造函数传入）
+    MotorPID pid_config_;           ///< PID配置（从构造函数传入）
+    float target_angle_ = 0.0f;     ///< 目标角度（外部通过setTargetAngle设置）
+    
+    // 电机参数（从参数表读取）
+    float reduction_ratio_ = 1.0f;  ///< 减速比
+    float max_angle_ = 180.0f;      ///< 最大角度限制（度）
+    float min_angle_ = -180.0f;     ///< 最小角度限制（度）
+    float encoder_res_ = 8192.0f;   ///< 编码器分辨率（线数）
+    int16_t max_output_current_ = 20000;  // 最大输出电流（mA）
+
+    // 电机参数表（静态成员，所有电机共享）
+    inline static const std::unordered_map<MotorType, MotorParams> motor_params_ = {
+        {MotorType::GM6020, {19.0f,  180.0f, -180.0f, 8192.0f}},  // GM6020：减速比19，限位±180度
+        {MotorType::J4310,  {30.0f,   90.0f,  -90.0f, 8192.0f}},  // J4310：减速比30，限位±90度
+        {MotorType::J8009,  {40.0f,  360.0f,    0.0f, 8192.0f}}   // J8009：减速比40，限位0-360度
+    };
 
     /**
      * @brief 存储DJI电机控制数据的静态数组

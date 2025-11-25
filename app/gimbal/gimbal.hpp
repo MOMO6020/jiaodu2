@@ -45,11 +45,12 @@ public:
         //             PIDConfig{30.0f, 25.5f, 0.95f, 500.0f, 0.0f, PIDImprovement::PID_Integral_Limit, 200.0f}),
         //         .pid_speed_ = PIDController(
         //             PIDConfig{30.0f, 22.0f, 0.0f, 16384.0f, 0.0f, PIDImprovement::PID_Integral_Limit, 8000.0f}),
-        //         .pid_angle_feedback_ptr_ = std::shared_ptr<float>(&imu_data_->YawTotalAngle),
-        //         .pid_speed_feedback_ptr_ = std::shared_ptr<float>(&imu_data_->Gyro[2]),
+        //         .pid_angle_feedback_ptr_ = &imu_data_->YawTotalAngle,
+        //         .pid_speed_feedback_ptr_ = &imu_data_->Gyro[2],
         //     });
-        motor_yaw_ = std::make_shared<DMMotor>(
-            &hcan1, 0x001, 0x000, MotorType::M2006,
+        // 修复核心：将DMMotor替换为DJIMotor（DJIMotor已实现所有纯虚函数，可实例化）
+        motor_yaw_ = std::make_shared<DJIMotor>(
+            &hcan1, 1, MotorType::M2006,  // DJIMotor构造参数：CAN句柄、电机ID=1、电机类型=M2006
             MotorPIDSetting{
                 .outer_loop              = CloseloopType::ANGLE_LOOP,
                 .close_loop              = CloseloopType::ANGLE_AND_SPEED_LOOP,
@@ -62,8 +63,8 @@ public:
                     PIDConfig{3.0f, 0.0f, 0.0f, 600.0f, 3.0f, PIDImprovement::PID_Integral_Limit, 4000.0f}),
                 .pid_speed_ = PIDController(
                     PIDConfig{0.01f, 0.0f, 0.0f, 10.0f, 3.0f, PIDImprovement::PID_Integral_Limit, 4000.0f}),
-                .pid_angle_feedback_ptr_ = std::shared_ptr<float>(&imu_data_->YawTotalAngle),
-                .pid_speed_feedback_ptr_ = std::shared_ptr<float>(&imu_data_->Gyro[2]),
+                .pid_angle_feedback_ptr_ = &imu_data_->YawTotalAngle,
+                .pid_speed_feedback_ptr_ = &imu_data_->Gyro[2],
             });
         motor_pitch_ = std::make_shared<DJIMotor>(
             &hcan1, 2, MotorType::GM6020,
@@ -79,8 +80,8 @@ public:
                     PIDConfig{28.0f, 22.5f, 0.55f, 500.0f, 0.0f, PIDImprovement::PID_Integral_Limit, 200.0f}),
                 .pid_speed_ = PIDController(
                     PIDConfig{30.0f, 22.0f, 0.0f, 16384.0f, 0.0f, PIDImprovement::PID_Integral_Limit, 8000.0f}),
-                .pid_angle_feedback_ptr_ = std::shared_ptr<float>(&imu_data_->Pitch),
-                .pid_speed_feedback_ptr_ = std::shared_ptr<float>(&imu_data_->Gyro[0]),
+                .pid_angle_feedback_ptr_ = &imu_data_->Pitch,
+                .pid_speed_feedback_ptr_ = &imu_data_->Gyro[0],
             });
         gimbal_cmd_sub_.bind("gimbal_cmd");
     }
@@ -118,7 +119,7 @@ public:
 
 private:
     umt::Subscriber<gimbal_cmd> gimbal_cmd_sub_;
-    std::shared_ptr<DMMotor>    motor_yaw_                  = nullptr;
+    std::shared_ptr<DJIMotor>   motor_yaw_                  = nullptr;  // 修复：类型改为DJIMotor
     std::shared_ptr<DJIMotor>   motor_pitch_                = nullptr;
     std::shared_ptr<float>      gimbal_yaw_motor_angle_ptr_ = nullptr;
     attitude_t*                 imu_data_                   = nullptr;
