@@ -66,8 +66,8 @@ void app_main()
             .external_speed_feedback = FeedbackType::INTERNAL
         },
         MotorPID{
-            .pid_angle_ = PIDController(PIDConfig{15.0f, 0.1f, 0.2f, 500.0f, 5.0f, PIDImprovement::PID_Integral_Limit, 30000.0f}),
-            .pid_speed_ = PIDController(PIDConfig{5.0f, 0.05f, 0.1f, 16384.0f, 3.0f, PIDImprovement::PID_Integral_Limit, 30000.0f})
+            .pid_angle_ = PIDController(PIDConfig{30.0f, 0.1f, 0.2f, 500.0f, 100.0f, PIDImprovement::PID_Integral_Limit, 30000.0f}),
+            .pid_speed_ = PIDController(PIDConfig{10.0f, 0.05f, 0.1f, 16384.0f, 100.0f, PIDImprovement::PID_Integral_Limit, 30000.0f})
         }
     );
 
