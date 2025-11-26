@@ -4,7 +4,7 @@
  * @LastEditors  : Notch-FGJ mail.fgj.com@gmail.com
  * @LastEditTime : 2025-11-28 16:00:00
  * @FilePath     : \gxnu_hushi_ec\modules\motor\DJIMotor\DJIMotor.cpp
- * @Description  : 大疆电机驱动（最终编译通过版本）
+ * @Description  : 大疆电机驱动（GM6020适配版）
  */
 #include "DJIMotor.hpp"
 #include "bsp/can/stm32_can.hpp"
@@ -20,7 +20,7 @@
 
 // 【关键修复】删除静态成员的重复定义（.hpp中inline static已完成定义+初始化）
 
-// 构造函数：初始化电机，绑定CAN回调
+// 构造函数：初始化电机，绑定CAN回调（重点修正GM6020的控制ID和发送组）
 DJIMotor::DJIMotor(CAN_HandleTypeDef* _hcan,
                    uint16_t           _motor_id,
                    MotorType          _motor_type,
@@ -44,7 +44,7 @@ DJIMotor::DJIMotor(CAN_HandleTypeDef* _hcan,
         while (true) osDelay(1000);
     }
 
-    // 从参数表读取电机参数
+    // 从参数表读取电机参数（GM6020专属配置）
     auto param_it = motor_params_.find(_motor_type);
     if (param_it != motor_params_.end())
     {
@@ -54,9 +54,20 @@ DJIMotor::DJIMotor(CAN_HandleTypeDef* _hcan,
         min_angle_ = params.min_angle;
         encoder_res_ = params.encoder_res;
         max_output_current_ = params.max_current;
-        // 计算控制ID和反馈ID（基础值+电机ID）
-        ctrl_can_id_ = params.ctrl_id_base + _motor_id;
-        feedback_can_id_ = params.feedback_id_base + _motor_id;
+        // -------------- 核心修改1：GM6020控制ID和反馈ID修正（严格遵循手册P6）--------------
+        if (motor_type_ == MotorType::GM6020)
+        {
+            // 控制ID：ID1-4→0x1FF，ID5-7→0x2FF（手册P6明确控制报文标识符）
+            ctrl_can_id_ = (_motor_id >= 1 && _motor_id <= 4) ? 0x1FF : 0x2FF;
+            // 反馈ID：0x204 + 电机ID（如ID1→0x205，ID5→0x209，手册P6）
+            feedback_can_id_ = 0x204 + _motor_id;
+        }
+        else
+        {
+            // 其他电机沿用原有逻辑
+            ctrl_can_id_ = params.ctrl_id_base + _motor_id;
+            feedback_can_id_ = params.feedback_id_base + _motor_id;
+        }
     }
     else
     {
@@ -65,10 +76,18 @@ DJIMotor::DJIMotor(CAN_HandleTypeDef* _hcan,
         reduction_ratio_ = 1.0f;
         max_angle_ = 180.0f;
         min_angle_ = -180.0f;
-        encoder_res_ = 8192.0f;
-        max_output_current_ = 20000;
-        ctrl_can_id_ = 0x200 + _motor_id;
-        feedback_can_id_ = 0x200 + _motor_id;
+        encoder_res_ = 8192.0f;  // GM6020编码器分辨率固定8192（手册P6）
+        max_output_current_ = 30000;  // GM6020最大输出30000（手册P6）
+        if (motor_type_ == MotorType::GM6020)
+        {
+            ctrl_can_id_ = (_motor_id >= 1 && _motor_id <= 4) ? 0x1FF : 0x2FF;
+            feedback_can_id_ = 0x204 + _motor_id;
+        }
+        else
+        {
+            ctrl_can_id_ = 0x200 + _motor_id;
+            feedback_can_id_ = 0x200 + _motor_id;
+        }
     }
 
     // 绑定CAN接收回调（接收电机反馈数据）
@@ -81,29 +100,43 @@ DJIMotor::DJIMotor(CAN_HandleTypeDef* _hcan,
              motor_id_, ctrl_can_id_, feedback_can_id_);
     LOGINFO("DJIMotor", info_msg);
 
-    // 初始化发送组（根据电机类型和CAN总线）
+    // -------------- 核心修改2：GM6020发送组修正（匹配控制ID分组）--------------
     if (motor_type_ == MotorType::GM6020)
     {
-        motor_tx_group_ = (_hcan->Instance == CAN1) ? 2 : 6;  // GM6020 1-4→组2（CAN1）/6（CAN2）
-        if (_motor_id > 4)
-            motor_tx_group_++;  // GM6020 5-8→组3（CAN1）/7（CAN2）
+        // 发送组与控制ID对应：0x1FF→组2（CAN1）/6（CAN2），0x2FF→组3（CAN1）/7（CAN2）
+        if (_hcan->Instance == CAN1)
+        {
+            motor_tx_group_ = (_motor_id >= 1 && _motor_id <= 4) ? 2 : 3;
+        }
+        else  // CAN2
+        {
+            motor_tx_group_ = (_motor_id >= 1 && _motor_id <= 4) ? 6 : 7;
+        }
+        // 强制设置GM6020最大输出电流（避免参数表错误）
+        max_output_current_ = 30000;
+        // 强制设置编码器分辨率（GM6020固定8192）
+        encoder_res_ = 8192.0f;
     }
     else
     {
-        motor_tx_group_ = (_hcan->Instance == CAN1) ? 0 : 4;  // M/J系列 1-4→组0（CAN1）/4（CAN2）
+        // 其他电机沿用原有发送组逻辑
+        motor_tx_group_ = (_hcan->Instance == CAN1) ? 0 : 4;
         if (_motor_id > 4)
-            motor_tx_group_++;  // M/J系列 5-8→组1（CAN1）/5（CAN2）
+            motor_tx_group_++;
     }
 
-    // 检查控制ID冲突
-    for (uint8_t i = 0; i < motor_count_; i++)
+    // 检查控制ID冲突（GM6020多电机共享0x1FF/0x2FF，无需检查冲突）
+    if (motor_type_ != MotorType::GM6020)
     {
-        if (registered_motors_[i] && registered_motors_[i]->ctrl_can_id_ == ctrl_can_id_)
+        for (uint8_t i = 0; i < motor_count_; i++)
         {
-            char err_msg[64];
-            snprintf(err_msg, sizeof(err_msg), "CtrlID 0x%03X conflict", ctrl_can_id_);
-            LOGERROR("DJIMotor", err_msg);
-            while (true) osDelay(1000);
+            if (registered_motors_[i] && registered_motors_[i]->ctrl_can_id_ == ctrl_can_id_)
+            {
+                char err_msg[64];
+                snprintf(err_msg, sizeof(err_msg), "CtrlID 0x%03X conflict", ctrl_can_id_);
+                LOGERROR("DJIMotor", err_msg);
+                while (true) osDelay(1000);
+            }
         }
     }
 
@@ -114,7 +147,7 @@ DJIMotor::DJIMotor(CAN_HandleTypeDef* _hcan,
     measure_ = Measure{};
 }
 
-// 解码CAN反馈数据（修正角度计算和日志）
+// 解码CAN反馈数据（修正GM6020角度计算，确保与目标值单位一致）
 void DJIMotor::decode(const uint8_t* buf, const uint8_t len)
 {
     if (buf == nullptr || len < 8) return;
@@ -129,25 +162,42 @@ void DJIMotor::decode(const uint8_t* buf, const uint8_t len)
     }
     daemon_->feed();  // 喂守护进程
 
-    // 解析编码器值
+    // 解析编码器值（GM6020：DATA0=高8位，DATA1=低8位，手册P6）
     measure_.last_encoder = measure_.encoder;
     measure_.encoder = (buf[0] << 8) | buf[1];
 
-    // 计算单圈机械角度（编码器值→度，除以减速比）
-    measure_.angle = (static_cast<float>(measure_.encoder) / encoder_res_) * 360.0f / reduction_ratio_;
+    // -------------- 核心修改3：GM6020角度计算修正（无需除以减速比！）--------------
+    if (motor_type_ == MotorType::GM6020)
+    {
+        // GM6020编码器直接输出机械角度（0-8191对应0-360°，无减速比，手册P6）
+        measure_.angle = (static_cast<float>(measure_.encoder) / encoder_res_) * 360.0f;
+    }
+    else
+    {
+        // 其他电机沿用原有逻辑（需除以减速比）
+        measure_.angle = (static_cast<float>(measure_.encoder) / encoder_res_) * 360.0f / reduction_ratio_;
+    }
 
-    // 解析转速（RPM→度/秒，除以减速比，平滑滤波）
+    // 解析转速（RPM→度/秒，GM6020无减速比，手册P6：DATA2=高8位，DATA3=低8位）
     int16_t raw_speed = (buf[2] << 8) | buf[3];
-    measure_.speed_dps = (1.0f - SPEED_SMOOTH_COEF) * measure_.speed_dps +
-                         SPEED_SMOOTH_COEF * static_cast<float>(raw_speed) * 6.0f / reduction_ratio_;
+    if (motor_type_ == MotorType::GM6020)
+    {
+        measure_.speed_dps = (1.0f - SPEED_SMOOTH_COEF) * measure_.speed_dps +
+                             SPEED_SMOOTH_COEF * static_cast<float>(raw_speed) * 6.0f;  // 无减速比
+    }
+    else
+    {
+        measure_.speed_dps = (1.0f - SPEED_SMOOTH_COEF) * measure_.speed_dps +
+                             SPEED_SMOOTH_COEF * static_cast<float>(raw_speed) * 6.0f / reduction_ratio_;
+    }
     measure_.speed = raw_speed;
 
-    // 解析电流（平滑滤波）
+    // 解析电流（GM6020：DATA4=高8位，DATA5=低8位，手册P6）
     int16_t raw_current = (buf[4] << 8) | buf[5];
     measure_.torque_current = (1.0f - CURRENT_SMOOTH_COEF) * measure_.torque_current +
                               CURRENT_SMOOTH_COEF * static_cast<float>(raw_current);
 
-    // 解析温度
+    // 解析温度（DATA6，手册P6）
     measure_.temperature = buf[6];
 
     // 处理圈数溢出（编码器半量程判断）
@@ -157,7 +207,14 @@ void DJIMotor::decode(const uint8_t* buf, const uint8_t len)
         measure_.total_round++;
 
     // 计算总机械角度
-    measure_.total_angle = measure_.total_round * 360.0f + measure_.angle;
+    if (motor_type_ == MotorType::GM6020)
+    {
+        measure_.total_angle = measure_.total_round * 360.0f + measure_.angle;
+    }
+    else
+    {
+        measure_.total_angle = measure_.total_round * 360.0f + measure_.angle;
+    }
 
     // 反转处理
     if (setting_.reverse)
@@ -171,7 +228,6 @@ void DJIMotor::decode(const uint8_t* buf, const uint8_t len)
     if (osKernelGetTickCount() - last_log_tick > LOG_INTERVAL_MS)
     {
         char log_msg[128];
-        // 修正：torque_current是int类型，用%d格式化
         snprintf(log_msg, sizeof(log_msg), "Motor#%d: Angle=%.1f°, Speed=%.0f°/s, Temp=%d°C, Current=%dmA",
                  motor_id_, measure_.total_angle, measure_.speed_dps, measure_.temperature, measure_.torque_current);
         LOGINFO("DJIMotor", log_msg);
@@ -182,7 +238,7 @@ void DJIMotor::decode(const uint8_t* buf, const uint8_t len)
     if (calculateCallback) calculateCallback();
 }
 
-// 离线回调
+// 离线回调（无修改）
 void DJIMotor::offlineCallback()
 {
     if (is_online_)
@@ -195,16 +251,16 @@ void DJIMotor::offlineCallback()
     }
 }
 
-// 设置目标角度（带软件限位）
+// 设置目标角度（带软件限位，GM6020无需转换，直接传角度值）
 void DJIMotor::setTargetAngle(float target_angle)
 {
-    // 限位处理
+    // 限位处理（GM6020可设±360°，根据机械结构调整）
     target_angle_ = std::clamp(target_angle, min_angle_, max_angle_);
-    // 同步到PID参考值
+    // 同步到PID参考值（GM6020直接用角度值，无需转换为编码器值）
     pid_ref_ = target_angle_;
 }
 
-// 计算输出电流（核心逻辑：修正PID、强制测试电流）
+// 计算输出电流（核心逻辑：适配GM6020 PID参数和输出范围）
 int16_t DJIMotor::calculateOutputCurrent()
 {
     // 未使能或离线，输出0
@@ -226,13 +282,13 @@ int16_t DJIMotor::calculateOutputCurrent()
     // 角度环控制（目标角度→速度指令）
     if ((setting_.close_loop & CloseloopType::ANGLE_LOOP) && setting_.outer_loop == CloseloopType::ANGLE_LOOP)
     {
-        // 反馈角度：使用电机总机械角度
+        // 反馈角度：使用电机总机械角度（GM6020已修正为直接角度值）
         pid_measure = measure_.total_angle;
 
-        // PID计算（目标角度和反馈角度均为机械角度，无需乘减速比）
+        // PID计算（目标角度和反馈角度均为机械角度，单位一致）
         pid_ref = pidControllers_.pid_angle_.PIDCalculate(pid_measure, pid_ref);
 
-        // 角度误差日志
+        // 角度误差日志（便于调试）
         static uint32_t last_angle_log = 0;
         if (osKernelGetTickCount() - last_angle_log > LOG_INTERVAL_MS)
         {
@@ -262,8 +318,15 @@ int16_t DJIMotor::calculateOutputCurrent()
         pid_ref = pidControllers_.pid_current_.PIDCalculate(pid_measure, pid_ref);
     }
 
-    // 电流限幅（根据电机最大电流）
-    pid_ref = std::clamp(pid_ref, static_cast<float>(-max_output_current_), static_cast<float>(max_output_current_));
+    // -------------- 核心修改4：GM6020输出电流限幅（严格匹配手册-30000~30000）--------------
+    if (motor_type_ == MotorType::GM6020)
+    {
+        pid_ref = std::clamp(pid_ref, -30000.0f, 30000.0f);
+    }
+    else
+    {
+        pid_ref = std::clamp(pid_ref, static_cast<float>(-max_output_current_), static_cast<float>(max_output_current_));
+    }
     pid_out_ = static_cast<int16_t>(pid_ref);
 
     // 输出电流日志
@@ -283,7 +346,7 @@ int16_t DJIMotor::calculateOutputCurrent()
 extern CAN_HandleTypeDef hcan1;
 extern CAN_HandleTypeDef hcan2;
 
-// 电机控制主函数：统一发送CAN控制帧（核心修正）
+// 电机控制主函数：统一发送CAN控制帧（GM6020协议适配核心）
 void DJIMotor::DJIMotorControl()
 {
     static CANHandle_t can1_handle = STM32CAN_GetInstance(&hcan1);
@@ -293,7 +356,6 @@ void DJIMotor::DJIMotorControl()
     for (auto& packet : control_data_)
     {
         memset(packet.data, 0, 8);
-        // 移除：ICAN::ClassicPacket没有len成员，DJI电机固定8字节
     }
 
     // 2. 遍历所有电机，填充控制数据
@@ -305,39 +367,54 @@ void DJIMotor::DJIMotorControl()
 
         // 计算输出电流
         int16_t output_current = motor->calculateOutputCurrent();
-        if (output_current == 0)
-            continue;
+        if (output_current == 0 && motor->motor_type_ != MotorType::GM6020)
+            continue;  // 非GM6020零电流跳过，GM6020需保留零电流帧
 
-        // 确定电流填充位置（1-4号电机→0/2/4/6字节，5-8号→1/3/5/7字节）
-        uint8_t idx = (motor->motor_id_ - 1) * 2;
-        if (motor->motor_id_ > 4)
-            idx = (motor->motor_id_ - 5) * 2 + 1;
-
-        // 关键：根据电机类型设置控制掩码（CAN帧高2字节）
+        // -------------- 核心修改5：GM6020控制帧格式修正（严格遵循手册P6）--------------
         if (motor->motor_type_ == MotorType::GM6020)
         {
-            // GM6020：高2字节=0x0003（启用位置环+速度环）
-            control_data_[motor->motor_tx_group_].data[0] = 0x00;
-            control_data_[motor->motor_tx_group_].data[1] = 0x03;
-            // 电流填充到对应位置
-            control_data_[motor->motor_tx_group_].data[idx] = output_current >> 8;
-            control_data_[motor->motor_tx_group_].data[idx + 1] = output_current & 0xFF;
+            uint32_t ctrl_id = motor->ctrl_can_id_;  // 0x1FF或0x2FF
+            uint8_t motor_id = motor->motor_id_;
+
+            // 数据填充位置：ID1-4→0/2/4/6字节（0x1FF帧），ID5-7→0/2/4字节（0x2FF帧）
+            if (ctrl_id == 0x1FF && motor_id >= 1 && motor_id <= 4)
+            {
+                uint8_t idx = (motor_id - 1) * 2;  // ID1→0-1，ID2→2-3，ID3→4-5，ID4→6-7
+                motor->control_data_[motor->motor_tx_group_].data[idx] = output_current >> 8;  // 高8位在前
+                motor->control_data_[motor->motor_tx_group_].data[idx + 1] = output_current & 0xFF;  // 低8位在后
+            }
+            else if (ctrl_id == 0x2FF && motor_id >= 5 && motor_id <= 7)
+            {
+                uint8_t idx = (motor_id - 5) * 2;  // ID5→0-1，ID6→2-3，ID7→4-5
+                motor->control_data_[motor->motor_tx_group_].data[idx] = output_current >> 8;
+                motor->control_data_[motor->motor_tx_group_].data[idx + 1] = output_current & 0xFF;
+                motor->control_data_[motor->motor_tx_group_].data[6] = 0x00;  // 0x2FF帧后2字节必须为0（手册P6）
+                motor->control_data_[motor->motor_tx_group_].data[7] = 0x00;
+            }
+
+            // 强制设置控制帧ID（避免分组ID错误）
+            motor->control_data_[motor->motor_tx_group_].id = ctrl_id;
         }
         else
         {
-            // M/J系列：高2字节=0x0000（电流模式）
-            control_data_[motor->motor_tx_group_].data[0] = 0x00;
-            control_data_[motor->motor_tx_group_].data[1] = 0x00;
-            // 电流填充到对应位置
-            control_data_[motor->motor_tx_group_].data[idx] = output_current >> 8;
-            control_data_[motor->motor_tx_group_].data[idx + 1] = output_current & 0xFF;
+            // 其他电机沿用原有逻辑
+            uint8_t idx = (motor->motor_id_ - 1) * 2;
+            if (motor->motor_id_ > 4)
+                idx = (motor->motor_id_ - 5) * 2 + 1;
+
+            // 关键：根据电机类型设置控制掩码（CAN帧高2字节）
+            motor->control_data_[motor->motor_tx_group_].data[0] = 0x00;
+            motor->control_data_[motor->motor_tx_group_].data[1] = 0x00;
+            motor->control_data_[motor->motor_tx_group_].data[idx] = output_current >> 8;
+            motor->control_data_[motor->motor_tx_group_].data[idx + 1] = output_current & 0xFF;
+            motor->control_data_[motor->motor_tx_group_].id = motor->ctrl_can_id_;
         }
     }
 
     // 3. 发送CAN数据（打印发送日志，调试用）
     for (uint8_t group = 0; group < 8; group++)
     {
-        // 检查是否有非零数据（避免发送空帧）
+        // 检查是否有非零数据（GM6020即使零电流也需发送，确保电机接收指令）
         bool has_data = false;
         for (uint8_t i = 0; i < 8; i++)
         {
@@ -347,7 +424,9 @@ void DJIMotor::DJIMotorControl()
                 break;
             }
         }
-        if (!has_data)
+        // GM6020分组强制发送（即使数据全零）
+        bool is_gm6020_group = (group == 2 || group == 3 || group == 6 || group == 7);
+        if (!has_data && !is_gm6020_group)
             continue;
 
         // 打印发送日志（修正：ID是uint32_t，用%03lX格式化）

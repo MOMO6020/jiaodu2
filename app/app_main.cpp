@@ -53,7 +53,7 @@ void app_main()
     gimbal                     = std::make_shared<Gimbal>(imu_data, gimbal_yaw_motor_angle_ptr);
 
     // 新增：初始化目标电机（GM6020/J4310/J8009）
-    extern CAN_HandleTypeDef hcan1;  // 假设使用CAN1总线，根据实际硬件修改
+    extern CAN_HandleTypeDef hcan1;  // 使用CAN1总线
     
     // GM6020初始化（ID=5，角度环+速度环控制）
     gm6020 = std::make_shared<DJIMotor>(
